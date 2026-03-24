@@ -17,11 +17,11 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-class MakatiApp(ctk.CTk):
+class LetterGeneratorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Makati Document Generator & Tracker")
+        self.title("Automated Document Generator & Tracker")
         self.geometry("1000x850")
 
         self.blue = "#0038A8"
@@ -59,22 +59,34 @@ class MakatiApp(ctk.CTk):
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
         # Buttons with Yellow Hover Effect
-        self.btn_home = ctk.CTkButton(self.sidebar_frame, 
-                                      text="Home", 
-                                      font=self.sidebar_font, # <--- Apply here
-                                      fg_color="transparent", 
-                                      hover_color=self.yellow)
+        # --- SIDEBAR BUTTONS ---
+        # Home Button (Row 1)
+        self.btn_home = ctk.CTkButton(self.sidebar_frame, text="Home", 
+                                      font=self.sidebar_font, fg_color="transparent", 
+                                      hover_color=self.yellow, text_color="white", 
+                                      command=self.show_home_view)
         self.btn_home.grid(row=1, column=0, padx=20, pady=10)
 
+        # Draft Button (Row 2)
         self.btn_draft = ctk.CTkButton(self.sidebar_frame, text="Draft Letter", 
-                                       fg_color="transparent", hover_color=self.yellow,
-                                       text_color="white", command=self.show_draft_view)
+                                       font=self.sidebar_font, fg_color="transparent", 
+                                       hover_color=self.yellow, text_color="white", 
+                                       command=self.show_draft_view)
         self.btn_draft.grid(row=2, column=0, padx=20, pady=10)
 
+        # Solicitation List (Row 3)
         self.btn_list = ctk.CTkButton(self.sidebar_frame, text="Solicitation List", 
-                                      fg_color="transparent", hover_color=self.yellow,
-                                      text_color="white", command=self.show_list_view)
+                                      font=self.sidebar_font, fg_color="transparent", 
+                                      hover_color=self.yellow, text_color="white", 
+                                      command=self.show_list_view)
         self.btn_list.grid(row=3, column=0, padx=20, pady=10)
+
+        # NEW: Edit Templates Button (Row 4)
+        self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="Edit Templates", 
+                                          font=self.sidebar_font, fg_color="transparent", 
+                                          hover_color=self.yellow, text_color="white", 
+                                          command=self.show_template_settings)
+        self.btn_settings.grid(row=4, column=0, padx=20, pady=10)
 
         self.main_view = ctk.CTkFrame(self, corner_radius=10, fg_color="transparent")
         self.main_view.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
@@ -86,10 +98,34 @@ class MakatiApp(ctk.CTk):
         db_path = resource_path("office_tracker.db")
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        
+        # 1. Records Table (Make sure there are NO periods inside the column names)
         cursor.execute('''CREATE TABLE IF NOT EXISTS records 
                           (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                           name TEXT, barangay TEXT, type TEXT, 
-                           date TEXT, filename TEXT)''')
+                           name TEXT, 
+                           barangay TEXT, 
+                           type TEXT, 
+                           date TEXT, 
+                           filename TEXT)''')
+
+        # 2. Templates Table (Category is the Key, Body_Text is the content)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS templates 
+                          (category TEXT PRIMARY KEY, 
+                           body_text TEXT)''')
+        
+        # 3. Seed Data (Fill the table if it is empty)
+        cursor.execute("SELECT COUNT(*) FROM templates")
+        if cursor.fetchone()[0] == 0:
+            # We use ? as placeholders to avoid syntax errors with quotes or periods
+            default_data = [
+                ("Medical", "regarding medical assistance for their treatment/medication at [INSERT HOSPITAL NAME]."),
+                ("Financial", "regarding their request for financial assistance to support their daily basic needs."),
+                ("Burial", "regarding their request for burial assistance for their deceased relative."),
+                ("Educational", "regarding their request for educational assistance for the upcoming school semester."),
+                ("Others", "regarding [INSERT SPECIFIC REQUEST HERE].")
+            ]
+            cursor.executemany("INSERT INTO templates (category, body_text) VALUES (?, ?)", default_data)
+        
         conn.commit()
         conn.close()
 
@@ -260,6 +296,32 @@ class MakatiApp(ctk.CTk):
 
         self.load_records()
 
+    def show_template_settings(self):
+        self.clear_view()
+        ctk.CTkLabel(self.main_view, text="Template Editor", font=("Arial", 22, "bold")).pack(pady=10)
+
+        # 1. Select Category to Edit
+        edit_frame = ctk.CTkFrame(self.main_view)
+        edit_frame.pack(fill="x", padx=40, pady=10)
+
+        ctk.CTkLabel(edit_frame, text="Select Template to Modify:").grid(row=0, column=0, padx=10, pady=10)
+        self.edit_cat_opt = ctk.CTkComboBox(edit_frame, values=list(self.templates.keys()), 
+                                            command=self.load_template_to_editor)
+        self.edit_cat_opt.grid(row=0, column=1, padx=10)
+
+        # 2. The Textbox to Edit the Content
+        self.template_edit_box = ctk.CTkTextbox(self.main_view, height=200, font=("Times New Roman", 13))
+        self.template_edit_box.pack(fill="both", expand=True, padx=40, pady=10)
+
+        # 3. Save Button
+        save_btn = ctk.CTkButton(self.main_view, text="Update Template", 
+                                 fg_color=self.blue, hover_color=self.yellow,
+                                 command=self.save_template_changes)
+        save_btn.pack(pady=20)
+        
+        # Load the first one by default
+        self.load_template_to_editor()
+
     def load_records(self):
         # Clear the UI
         for widget in self.scroll_frame.winfo_children():
@@ -295,6 +357,39 @@ class MakatiApp(ctk.CTk):
             btn_view.grid(row=0, column=4, padx=(10, 0))
         
         conn.close()
+    
+    def load_template_to_editor(self, choice=None):
+        cat = self.edit_cat_opt.get()
+        db_path = resource_path("office_tracker.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Pull the LATEST text saved in the DB
+        cursor.execute("SELECT body_text FROM templates WHERE category = ?", (cat,))
+        result = cursor.fetchone()
+        
+        self.template_edit_box.delete("1.0", "end")
+        if result:
+            self.template_edit_box.insert("1.0", result[0])
+        else:
+            # Fallback if the category isn't in the DB yet
+            self.template_edit_box.insert("1.0", "Template not found in database.")
+            
+        conn.close()
+
+    def save_template_changes(self):
+        cat = self.edit_cat_opt.get()
+        new_text = self.template_edit_box.get("1.0", "end-1c")
+        
+        conn = sqlite3.connect(resource_path("office_tracker.db"))
+        cursor = conn.cursor()
+        cursor.execute("UPDATE templates SET body_text = ? WHERE category = ?", (new_text, cat))
+        conn.commit()
+        conn.close()
+        
+        # Critical: Update the live self.templates dictionary so it reflects immediately
+        self.templates[cat] = new_text
+        print(f"Template for {cat} updated successfully!")
 
     def generate_and_open(self):
         header_text = self.letter_header.get("1.0", "end-1c")
@@ -326,5 +421,5 @@ class MakatiApp(ctk.CTk):
             print(f"Error opening file: {e}")
 
 if __name__ == "__main__":
-    app = MakatiApp()
+    app = LetterGeneratorApp()
     app.mainloop()
