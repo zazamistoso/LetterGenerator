@@ -1,9 +1,10 @@
 import os
 import sys
+import csv
 import sqlite3
 import datetime
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -16,7 +17,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-DB_PATH = resource_path("solicitation_tracker.db")
+DB_PATH = os.path.join(os.path.expanduser("~"), "Documents", "solicitation_tracker.db")
 
 # ── Color Palette (matches document tracker style) ────────────────────────────
 ACCENT      = "#0038A8"   # Philippine flag blue
@@ -278,7 +279,7 @@ class ListTab(ctk.CTkFrame):
         self._search_var = ctk.StringVar()
         search = ctk.CTkEntry(top, textvariable=self._search_var,
                               placeholder_text="Search name…",
-                              width=280, height=32)
+                              width=240, height=32)
         search.pack(side="right", padx=(0, 6))
         search.bind("<KeyRelease>", lambda _e: self._load())
 
@@ -288,6 +289,18 @@ class ListTab(ctk.CTkFrame):
                           values=["All"] + STATUSES,
                           width=160, height=32,
                           command=lambda _v: self._load()).pack(side="right", padx=6)
+
+        # Import / Export
+        ctk.CTkButton(top, text="↑  Import CSV", width=120, height=32,
+                      fg_color=SURFACE, hover_color=ROW_ALT,
+                      text_color=ACCENT, border_width=1, border_color=ACCENT,
+                      font=ctk.CTkFont(size=12),
+                      command=self._import_csv).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(top, text="↓  Export CSV", width=120, height=32,
+                      fg_color=SURFACE, hover_color=ROW_ALT,
+                      text_color=ACCENT, border_width=1, border_color=ACCENT,
+                      font=ctk.CTkFont(size=12),
+                      command=self._export_csv).pack(side="right", padx=(0, 4))
 
         # ── Column headers ──
         hdr = ctk.CTkFrame(self, fg_color="gray25", corner_radius=0, height=34)
@@ -498,13 +511,20 @@ class ListTab(ctk.CTkFrame):
         sf = ctk.CTkFrame(panel_status, fg_color=SURFACE)
         sf.pack(fill="both", expand=True, padx=24, pady=18)
 
+        section_label(sf, "Name").pack(anchor="w", pady=(0, 2))
+        name_var = ctk.StringVar(value=name)
+        ctk.CTkEntry(sf, textvariable=name_var, height=34,
+                     font=ctk.CTkFont(size=13)).pack(fill="x", pady=(0, 10))
+
         section_label(sf, "Barangay").pack(anchor="w", pady=(0, 2))
-        ctk.CTkLabel(sf, text=brgy, font=ctk.CTkFont(size=13),
-                     text_color=TEXT_MAIN).pack(anchor="w", pady=(0, 10))
+        brgy_var = ctk.StringVar(value=brgy)
+        ctk.CTkOptionMenu(sf, variable=brgy_var, values=BARANGAYS,
+                          height=34).pack(fill="x", pady=(0, 10))
 
         section_label(sf, "Category").pack(anchor="w", pady=(0, 2))
-        ctk.CTkLabel(sf, text=cat, font=ctk.CTkFont(size=13),
-                     text_color=TEXT_MAIN).pack(anchor="w", pady=(0, 10))
+        cat_var = ctk.StringVar(value=cat)
+        ctk.CTkOptionMenu(sf, variable=cat_var, values=CATEGORIES,
+                          height=34).pack(fill="x", pady=(0, 10))
 
         section_label(sf, "Status").pack(anchor="w", pady=(0, 2))
         status_var = ctk.StringVar(value=status)
@@ -527,7 +547,7 @@ class ListTab(ctk.CTkFrame):
         tab_btns = {}
 
         def switch_edit_tab(name):
-            if name == "Status":
+            if name == "Details":
                 panel_status.tkraise()
             else:
                 panel_remarks.tkraise()
@@ -539,7 +559,7 @@ class ListTab(ctk.CTkFrame):
                     b.configure(fg_color=TAB_IDLE_BG, text_color=TAB_IDLE_TEXT,
                                 hover_color=TAB_IDLE_BG)
 
-        for tab_name in ("Status", "Remarks"):
+        for tab_name in ("Details", "Remarks"):
             b = ctk.CTkButton(tab_bar, text=tab_name, width=120, height=36,
                               fg_color=TAB_IDLE_BG, hover_color=TAB_IDLE_BG,
                               text_color=TAB_IDLE_TEXT,
@@ -549,16 +569,24 @@ class ListTab(ctk.CTkFrame):
             b.pack(side="left")
             tab_btns[tab_name] = b
 
-        switch_edit_tab("Status")
+        switch_edit_tab("Details")
 
         # ── Save button ──
         def _save_edit():
+            new_name    = name_var.get().upper().strip()
+            new_brgy    = brgy_var.get()
+            new_cat     = cat_var.get()
             new_status  = status_var.get()
             new_remarks = remarks_box.get("1.0", "end-1c").strip()
+
+            if not new_name:
+                messagebox.showwarning("Missing Field", "Name cannot be empty.")
+                return
+
             with db_connect() as con:
                 con.execute(
-                    "UPDATE solicitations SET status = ?, remarks = ? WHERE id = ?",
-                    (new_status, new_remarks, record_id)
+                    "UPDATE solicitations SET name = ?, barangay = ?, category = ?, status = ?, remarks = ? WHERE id = ?",
+                    (new_name, new_brgy, new_cat, new_status, new_remarks, record_id)
                 )
                 con.commit()
             win.destroy()
@@ -570,6 +598,113 @@ class ListTab(ctk.CTkFrame):
                       fg_color=ACCENT, hover_color=ACCENT_DARK,
                       font=ctk.CTkFont(size=13, weight="bold"),
                       command=_save_edit).pack(fill="x")
+
+    def _export_csv(self):
+        search = self._search_var.get().upper()
+        filt   = self._filter_var.get()
+
+        query  = "SELECT name, barangay, category, status, date, remarks FROM solicitations WHERE name LIKE ?"
+        params = [f"%{search}%"]
+        if filt != "All":
+            query += " AND status = ?"
+            params.append(filt)
+        query += f" ORDER BY {self._sort}"
+
+        with db_connect() as con:
+            rows = con.execute(query, params).fetchall()
+
+        if not rows:
+            messagebox.showinfo("Export", "No records to export.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            initialfile=f"solicitations_{datetime.date.today()}.csv",
+            title="Export Records"
+        )
+        if not path:
+            return
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Name", "Barangay", "Category", "Status", "Date", "Remarks"])
+            writer.writerows(rows)
+
+        messagebox.showinfo("Export Complete", f"{len(rows)} record(s) exported to:\n{path}")
+
+    def _import_csv(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("CSV files", "*.csv")],
+            title="Import Records from CSV"
+        )
+        if not path:
+            return
+
+        imported = skipped = errors = 0
+
+        try:
+            with open(path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+
+                # Force header read then validate (case-insensitive)
+                fieldnames = reader.fieldnames or []
+                fieldnames_lower = {f.strip().lower() for f in fieldnames}
+                required = {"name", "barangay", "category", "status", "date"}
+                if not required.issubset(fieldnames_lower):
+                    missing = required - fieldnames_lower
+                    messagebox.showerror("Import Failed",
+                                         f"CSV is missing column(s): {', '.join(sorted(missing))}\n\nFound: {', '.join(fieldnames) or 'none'}")
+                    return
+
+                # Build a lowercase key lookup so casing in the file doesn't matter
+                rows_to_insert = list(reader)
+
+            def get(row, key):
+                for k, v in row.items():
+                    if k.strip().lower() == key:
+                        return v.strip()
+                return ""
+
+            imported = skipped = errors = 0
+            with db_connect() as con:
+                for row in rows_to_insert:
+                    name     = get(row, "name").upper()
+                    barangay = get(row, "barangay")
+                    category = get(row, "category")
+                    status   = get(row, "status") or "Pending"
+                    date     = get(row, "date")
+                    remarks  = get(row, "remarks")
+
+                    if not name or not date:
+                        errors += 1
+                        continue
+
+                    # Skip exact duplicates (same name + date)
+                    exists = con.execute(
+                        "SELECT 1 FROM solicitations WHERE name = ? AND date = ?",
+                        (name, date)
+                    ).fetchone()
+
+                    if exists:
+                        skipped += 1
+                        continue
+
+                    con.execute(
+                        "INSERT INTO solicitations (name, barangay, category, status, date, remarks) VALUES (?, ?, ?, ?, ?, ?)",
+                        (name, barangay, category, status, date, remarks)
+                    )
+                    imported += 1
+
+                con.commit()
+
+        except Exception as e:
+            messagebox.showerror("Import Error", str(e))
+            return
+
+        self._load()
+        messagebox.showinfo("Import Complete",
+                            f"Imported:  {imported}\nSkipped (duplicates):  {skipped}\nInvalid rows:  {errors}")
 
     def _delete(self, record_id, name):
         if messagebox.askyesno("Confirm Delete",
